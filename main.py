@@ -29,7 +29,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI and HTTPX clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-httpx_client = httpx.AsyncClient()
 
 
 # --- 1. FastAPI App Initialization ---
@@ -89,16 +88,18 @@ async def send_whatsapp_message(to_number: str, message: str):
         "type": "text",
         "text": {"body": message},
     }
-    try:
-        logger.info(f"Sending message to {to_number}: '{message}'")
-        response = await httpx_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        logger.info(f"WhatsApp API response: {response.json()}")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Error sending WhatsApp message: {e.response.text}")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-
+    # Create a client that only exists for this request
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"Sending message to {to_number}: '{message}'")
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            logger.info(f"WhatsApp API response: {response.json()}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Error sending WhatsApp message: {e.response.text}")
+        except Exception as e:
+            # This will no longer be an "Event loop is closed" error
+            logger.error(f"An unexpected error occurred while sending message: {e}")
 
 # --- 4. Define All FastAPI Routes and Middleware ---
 
