@@ -91,9 +91,10 @@ async def send_whatsapp_message(to_number: str, message: str):
     }
     try:
         logger.info(f"Sending message to {to_number}: '{message}'")
-        response = await httpx_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        logger.info(f"WhatsApp API response: {response.json()}")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            logger.info(f"WhatsApp API response: {response.json()}")
     except httpx.HTTPStatusError as e:
         logger.error(f"Error sending WhatsApp message: {e.response.text}")
     except Exception as e:
