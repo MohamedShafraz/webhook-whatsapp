@@ -73,7 +73,7 @@ async def get_openai_response(message: str) -> str:
         logger.error(f"Error calling OpenAI API: {e}")
         return "I encountered an error. Please try again later."
 
-async def send_whatsapp_message(to_number: str, message: str, request: Request):
+async def send_whatsapp_message(to_number: str, message: str, request):
     url = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
