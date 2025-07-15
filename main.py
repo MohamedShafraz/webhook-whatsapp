@@ -168,7 +168,7 @@ async def handle_webhook(request: Request):
 
             # Get AI response and send it back
             ai_response = await get_openai_response(msg_body)
-            await send_whatsapp_message(from_number, ai_response)
+            await send_whatsapp_message(request, from_number, ai_response)
         else:
             # Handle non-text messages if you want (e.g., images, audio)
             logger.info(f"Received a non-text message type: {message_entry.get('type')}. Ignoring.")
