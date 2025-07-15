@@ -5,7 +5,8 @@ import logging
 import httpx
 from openai import OpenAI
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, status, Query
+# 👇 1. RENAMED THE IMPORT HERE to avoid name collision
+from fastapi import FastAPI, Request, Response, status, Query as FastapiQuery
 from strawberry.fastapi import GraphQLRouter
 import strawberry
 from typing import Optional
@@ -35,6 +36,7 @@ httpx_client = httpx.AsyncClient()
 app = FastAPI()
 
 # --- 2. Define GraphQL Schema and Resolvers with Strawberry ---
+# This class name is fine, as we renamed the conflicting import.
 @strawberry.type
 class Query:
     @strawberry.field
@@ -108,9 +110,10 @@ def read_root():
 # Webhook Verification Endpoint (GET)
 @app.get("/webhook")
 def verify_webhook(
-    mode: Optional[str] = Query(None, alias="hub.mode"),
-    token: Optional[str] = Query(None, alias="hub.verify_token"),
-    challenge: Optional[str] = Query(None, alias="hub.challenge"),
+    # 👇 2. UPDATED THE FUNCTION SIGNATURE to use the new name
+    mode: Optional[str] = FastapiQuery(None, alias="hub.mode"),
+    token: Optional[str] = FastapiQuery(None, alias="hub.verify_token"),
+    challenge: Optional[str] = FastapiQuery(None, alias="hub.challenge"),
 ):
     if mode and token:
         if mode == "subscribe" and token == VERIFY_TOKEN:
@@ -128,25 +131,48 @@ async def handle_webhook(request: Request):
     body = await request.json()
     logger.info(f"Incoming webhook message: {json.dumps(body, indent=2)}")
 
-    # Check if the message is from a WhatsApp business account
-    if body.get("object") == "whatsapp_business_account":
-        try:
-            # Safely extract message details
-            message_entry = body["entry"][0]["changes"][0]["value"]["messages"][0]
-            if message_entry.get("type") == "text":
-                from_number = message_entry["from"]
-                msg_body = message_entry["text"]["body"]
-                logger.info(f"Message from {from_number}: {msg_body}")
+    # Check if this is a WhatsApp business account notification
+    if body.get("object") != "whatsapp_business_account":
+        logger.warning("Received a non-WhatsApp webhook")
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
 
-                # --- NEW: Get AI response and send it back ---
-                ai_response = await get_openai_response(msg_body)
-                await send_whatsapp_message(from_number, ai_response)
+    # Safely extract the value object from the first entry's change
+    try:
+        value = body["entry"][0]["changes"][0]["value"]
+    except (KeyError, IndexError):
+        logger.error("Could not extract 'value' object from webhook payload")
+        return Response(status_code=200) # Still return 200 to acknowledge receipt
 
-        except (KeyError, IndexError) as e:
-            logger.error(f"Could not parse webhook payload: {e}")
-            pass  # Ignore payloads that aren't text messages
+    # --- NEW, MORE ROBUST LOGIC ---
+    # Check if this is a message status update (e.g., 'sent', 'delivered', 'read')
+    if "statuses" in value:
+        status_data = value["statuses"][0]
+        status = status_data["status"]
+        message_id = status_data["id"]
+        logger.info(f"Received status update for message {message_id}: {status}")
+        # We don't need to do anything with statuses for now, so we just acknowledge it.
+        return Response(status_code=200)
 
+    # Check if this is an incoming user message
+    if "messages" in value:
+        message_entry = value["messages"][0]
+        
+        # We only process text messages for now
+        if message_entry.get("type") == "text":
+            from_number = message_entry["from"]
+            msg_body = message_entry["text"]["body"]
+            logger.info(f"Message from {from_number}: {msg_body}")
+
+            # Get AI response and send it back
+            ai_response = await get_openai_response(msg_body)
+            await send_whatsapp_message(from_number, ai_response)
+        else:
+            # Handle non-text messages if you want (e.g., images, audio)
+            logger.info(f"Received a non-text message type: {message_entry.get('type')}. Ignoring.")
+
+    # Acknowledge receipt of the webhook event
     return Response(status_code=200)
+
 
 # Mount the GraphQL app at the /graphql endpoint
 app.include_router(graphql_app, prefix="/graphql")
