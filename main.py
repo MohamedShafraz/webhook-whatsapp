@@ -33,8 +33,10 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 # --- 1. FastAPI App Initialization with Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("🚀 App startup: Creating httpx_client")
     app.state.httpx_client = httpx.AsyncClient()
     yield
+    logger.info("🛑 App shutdown: Closing httpx_client")
     await app.state.httpx_client.aclose()
 
 app = FastAPI(lifespan=lifespan)
@@ -72,31 +74,34 @@ async def get_openai_response(message: str) -> str:
         logger.error(f"Error calling OpenAI API: {e}")
         return "I encountered an error. Please try again later."
 
+import traceback
+
 async def send_whatsapp_message(to_number: str, message: str, request: Request):
-    url = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "text",
-        "text": {"body": message},
-    }
-
-    httpx_client = request.app.state.httpx_client
-
     try:
+        httpx_client = request.app.state.httpx_client  # may raise AttributeError if not initialized
+
+        url = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+        headers = {
+            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "text",
+            "text": {"body": message},
+        }
+
         logger.info(f"Sending message to {to_number}: '{message}'")
         response = await httpx_client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         logger.info(f"WhatsApp API response: {response.json()}")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Error sending WhatsApp message: {e.response.text}")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
 
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error: {e.response.text}")
+    except Exception as e:
+        logger.error("Unexpected error in send_whatsapp_message:")
+        logger.error(traceback.format_exc())  
 # --- 4. FastAPI Routes ---
 
 @app.get("/")
@@ -150,6 +155,8 @@ async def handle_webhook(request: Request):
             logger.info(f"Message from {from_number}: {msg_body}")
 
             ai_response = await get_openai_response(msg_body)
+            logger.info(f"AI response: {ai_response}")
+
             await send_whatsapp_message(from_number, ai_response, request)
         else:
             logger.info(f"Received a non-text message type: {message_entry.get('type')}. Ignoring.")
