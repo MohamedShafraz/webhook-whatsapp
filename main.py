@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, status, Query as FastapiQuery
 from strawberry.fastapi import GraphQLRouter
 import strawberry
+from contextlib import asynccontextmanager
 from typing import Optional
 
 # --- 0. Load Environment Variables and Initialize Clients ---
@@ -29,11 +30,17 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI and HTTPX clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-httpx_client = httpx.AsyncClient()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ✅ Create the HTTPX client and store it in app.state
+    app.state.httpx_client = httpx.AsyncClient()
+    yield
+    # ✅ Clean up on shutdown
+    await app.state.httpx_client.aclose()
 
 # --- 1. FastAPI App Initialization ---
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 
 # --- 2. Define GraphQL Schema and Resolvers with Strawberry ---
 # This class name is fine, as we renamed the conflicting import.
@@ -74,7 +81,7 @@ async def get_openai_response(message: str) -> str:
         return "I encountered an error. Please try again later."
 
 
-async def send_whatsapp_message(to_number: str, message: str):
+async def send_whatsapp_message(request:Request,to_number: str, message: str):
     """
     Sends a message back to the user via the WhatsApp Cloud API.
     """
@@ -90,9 +97,10 @@ async def send_whatsapp_message(to_number: str, message: str):
         "text": {"body": message},
     }
     try:
+        httpx_client = request.app.state.httpx_client  # ✅ Access from app state
         logger.info(f"Sending message to {to_number}: '{message}'")
         response = await httpx_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()
         logger.info(f"WhatsApp API response: {response.json()}")
     except httpx.HTTPStatusError as e:
         logger.error(f"Error sending WhatsApp message: {e.response.text}")
@@ -165,7 +173,7 @@ async def handle_webhook(request: Request):
 
             # Get AI response and send it back
             ai_response = await get_openai_response(msg_body)
-            await send_whatsapp_message(from_number, ai_response)
+            await send_whatsapp_message(request,from_number, ai_response)
         else:
             # Handle non-text messages if you want (e.g., images, audio)
             logger.info(f"Received a non-text message type: {message_entry.get('type')}. Ignoring.")
