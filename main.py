@@ -3,8 +3,10 @@ import os
 import json
 import logging
 import httpx
-from openai import AsyncOpenAI # ## CHANGED: Import the async client
+from openai import OpenAI
 from dotenv import load_dotenv
+# 👇 1. IMPORT `asynccontextmanager`
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status, Query as FastapiQuery
 from strawberry.fastapi import GraphQLRouter
 import strawberry
@@ -26,25 +28,29 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# ## DELETED: Removed global client initializations. They will be handled in app lifespan.
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- 1. FastAPI App Initialization ---
-app = FastAPI()
 
-# ## CHANGED: Lifespan events are now defined early and correctly.
-# They will manage the lifecycle of our async clients.
-@app.on_event("startup")
-async def startup_event():
-    logger.info("🚀 App startup: Creating clients")
-    # Store clients on the app state
+# --- 1. FastAPI App Initialization with Lifespan Management ---
+
+# 👇 2. NEW LIFESPAN CONTEXT MANAGER
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Code to run on startup
+    logger.info("🚀 App startup: Creating httpx_client")
+    # Store the client in the app's state
     app.state.httpx_client = httpx.AsyncClient()
-    app.state.openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    
+    yield # The application runs here
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("🛑 App shutdown: Closing clients")
+    # Code to run on shutdown
+    logger.info("🛑 App shutdown: Closing httpx_client")
     await app.state.httpx_client.aclose()
-    await app.state.openai_client.close()
+
+
+# 👇 3. UPDATED APP INITIALIZATION
+app = FastAPI(lifespan=lifespan)
 
 
 # --- 2. Define GraphQL Schema and Resolvers with Strawberry ---
@@ -60,19 +66,16 @@ graphql_app = GraphQLRouter(schema)
 
 # --- 3. New Helper Functions for AI and WhatsApp ---
 
-# ## CHANGED: Function now accepts the openai_client as an argument
-async def get_openai_response(message: str, openai_client: AsyncOpenAI) -> str:
+async def get_openai_response(message: str) -> str:
     """
-    Sends a message to the OpenAI API and gets a response using the async client.
+    Sends a message to the OpenAI API and gets a response.
     """
     if not openai_client.api_key:
         logger.error("OpenAI API key is not set.")
         return "Sorry, I can't connect to my brain right now."
-
     try:
         logger.info(f"Sending to OpenAI: '{message}'")
-        # ## CHANGED: Use 'await' with the async client
-        completion = await openai_client.chat.completions.create(
+        completion = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
@@ -86,8 +89,8 @@ async def get_openai_response(message: str, openai_client: AsyncOpenAI) -> str:
         logger.error(f"Error calling OpenAI API: {e}")
         return "I encountered an error. Please try again later."
 
-# ## CHANGED: Function now accepts the httpx_client as an argument
-async def send_whatsapp_message(to_number: str, message: str, httpx_client: httpx.AsyncClient):
+
+async def send_whatsapp_message(client: httpx.AsyncClient, to_number: str, message: str):
     """
     Sends a message back to the user via the WhatsApp Cloud API.
     """
@@ -104,23 +107,23 @@ async def send_whatsapp_message(to_number: str, message: str, httpx_client: http
     }
     try:
         logger.info(f"Sending message to {to_number}: '{message}'")
-        # ## CHANGED: Use the client passed as an argument
-        response = await httpx_client.post(url, headers=headers, json=payload)
+        response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
         logger.info(f"WhatsApp API response: {response.json()}")
     except httpx.HTTPStatusError as e:
         logger.error(f"Error sending WhatsApp message: {e.response.text}")
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(f"An unexpected error occurred during WhatsApp send: {e}")
 
 
-# --- 4. Define All FastAPI Routes ---
+# --- 4. Define All FastAPI Routes and Middleware ---
 
-# ## DELETED: Removed the duplicate 'app = FastAPI()' line.
+# 👇 4. REMOVED the deprecated @app.on_event handlers as they are replaced by lifespan
 
 @app.get("/")
 def read_root():
     return {"message": "✅ WhatsApp FastAPI Webhook is alive!"}
+
 
 @app.get("/webhook")
 def verify_webhook(
@@ -138,14 +141,12 @@ def verify_webhook(
     logger.error("Webhook verification failed. Missing mode or token.")
     return Response(status_code=status.HTTP_400_BAD_REQUEST)
 
+
 @app.post("/webhook")
 async def handle_webhook(request: Request):
+    # The logic inside here remains the same, as it correctly uses request.app.state
     body = await request.json()
     logger.info(f"Incoming webhook message: {json.dumps(body, indent=2)}")
-
-    # ## CHANGED: Get clients from the request/app state
-    httpx_client = request.app.state.httpx_client
-    openai_client = request.app.state.openai_client
 
     if body.get("object") != "whatsapp_business_account":
         logger.warning("Received a non-WhatsApp webhook")
@@ -159,7 +160,9 @@ async def handle_webhook(request: Request):
 
     if "statuses" in value:
         status_data = value["statuses"][0]
-        logger.info(f"Received status update for message {status_data['id']}: {status_data['status']}")
+        status = status_data["status"]
+        message_id = status_data["id"]
+        logger.info(f"Received status update for message {message_id}: {status}")
         return Response(status_code=200)
 
     if "messages" in value:
@@ -169,17 +172,19 @@ async def handle_webhook(request: Request):
             msg_body = message_entry["text"]["body"]
             logger.info(f"Message from {from_number}: {msg_body}")
 
-            # Get AI response and send it back
-            # ## CHANGED: Pass the clients to the helper functions
-            ai_response = await get_openai_response(msg_body, openai_client)
-            await send_whatsapp_message(from_number, ai_response, httpx_client)
+            ai_response = await get_openai_response(msg_body)
+            
+            client = request.app.state.httpx_client
+            await send_whatsapp_message(client, from_number, ai_response)
         else:
             logger.info(f"Received a non-text message type: {message_entry.get('type')}. Ignoring.")
 
     return Response(status_code=200)
 
-# Mount the GraphQL app
+
+# Mount the GraphQL app at the /graphql endpoint
 app.include_router(graphql_app, prefix="/graphql")
 
-# --- 5. Run the Server ---
+
+# --- 5. Run the Server (using uvicorn command line) ---
 # Use the command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
