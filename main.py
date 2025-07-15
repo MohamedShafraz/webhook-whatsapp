@@ -29,7 +29,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI and HTTPX clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-httpx_client = httpx.AsyncClient()
+# httpx_client = httpx.AsyncClient()
 
 
 # --- 1. FastAPI App Initialization ---
@@ -74,10 +74,13 @@ async def get_openai_response(message: str) -> str:
         return "I encountered an error. Please try again later."
 
 
-async def send_whatsapp_message(to_number: str, message: str):
+async def send_whatsapp_message(request: Request,to_number: str, message: str):
     """
     Sends a message back to the user via the WhatsApp Cloud API.
     """
+
+    httpx_client = request.app.state.httpx_client
+
     url = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -92,7 +95,7 @@ async def send_whatsapp_message(to_number: str, message: str):
     try:
         logger.info(f"Sending message to {to_number}: '{message}'")
         response = await httpx_client.post(url, headers=headers, json=payload)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()
         logger.info(f"WhatsApp API response: {response.json()}")
     except httpx.HTTPStatusError as e:
         logger.error(f"Error sending WhatsApp message: {e.response.text}")
