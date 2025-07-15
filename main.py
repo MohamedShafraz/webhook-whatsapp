@@ -29,16 +29,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI and HTTPX clients
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-httpx_client: httpx.AsyncClient = None
-
-@app.on_event("startup")
-async def startup_event():
-    global httpx_client
-    httpx_client = httpx.AsyncClient()
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await httpx_client.aclose()
+httpx_client = httpx.AsyncClient()
 
 
 # --- 1. FastAPI App Initialization ---
